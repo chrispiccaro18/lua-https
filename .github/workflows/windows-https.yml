@@ -1,4 +1,4 @@
-name: Build https.dll (Windows)
+name: Build https.dll (Windows, LuaJIT)
 
 on:
   workflow_dispatch:
@@ -6,29 +6,85 @@ on:
     branches: [ main, ci-* ]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build-windows:
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64, Win32, ARM64]
+        arch: [x64, Win32, ARM64]   # MSVC architectures
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install vcpkg + (LuaJIT preferred)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Map MSVC -A values to vcpkg triplets
+          if ("${{ matrix.arch }}" -eq "Win32") { $triplet = "x86-windows" }
+          elseif ("${{ matrix.arch }}" -eq "ARM64") { $triplet = "arm64-windows" }
+          else { $triplet = "x64-windows" }
+
+          # Bootstrap vcpkg
+          git clone https://github.com/microsoft/vcpkg $env:USERPROFILE\vcpkg
+          & $env:USERPROFILE\vcpkg\bootstrap-vcpkg.bat
+
+          # Try LuaJIT first; if it fails (common on some ARM64 setups), fall back to Lua.
+          $usingLuaFallback = $false
+          try {
+            & $env:USERPROFILE\vcpkg\vcpkg.exe install luajit --triplet $triplet --clean-after-build
+          }
+          catch {
+            if ("${{ matrix.arch }}" -eq "ARM64") {
+              Write-Host "LuaJIT unavailable for $triplet; falling back to Lua."
+              & $env:USERPROFILE\vcpkg\vcpkg.exe install lua --triplet $triplet --clean-after-build
+              $usingLuaFallback = $true
+            }
+            else {
+              throw
+            }
+          }
+
+          # Export env for subsequent steps
+          "VCPKG_ROOT=$($env:USERPROFILE)\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VCPKG_TRIPLET=$triplet" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if ($usingLuaFallback) {
+            "BT_LUA_FLAVOR=lua" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+          else {
+            "BT_LUA_FLAVOR=luajit" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+
       - name: Configure (CMake)
         run: >
-          cmake -B build -S . -A ${{ matrix.arch }}
-          -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}\install
+          cmake -B build -S .
+          -A ${{ matrix.arch }}
+          -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake
+          -DVCPKG_TARGET_TRIPLET=%VCPKG_TRIPLET%
+          -DCMAKE_INSTALL_PREFIX=%CD%\install
 
-      - name: Build & Install
+      - name: Build & Install (Release)
         run: cmake --build build --config Release --target install
 
-      - name: Upload artifact
+      - name: Show install tree
+        shell: pwsh
+        run: |
+          Write-Host "`n=== Installed files ==="
+          Get-ChildItem -Recurse install | ForEach-Object { $_.FullName }
+
+      - name: Upload DLL artifact
         uses: actions/upload-artifact@v4
         with:
-          name: https-${{ matrix.arch }}
-          path: install\**\*
+          name: https-${{ matrix.arch }}-${{ env.BT_LUA_FLAVOR }}
+          path: |
+            install\**\*.dll
+            install\**\*.pdb
+            install\**\*.lib
+            install\**\*.exp
           if-no-files-found: error
