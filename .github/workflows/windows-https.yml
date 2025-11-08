@@ -1,0 +1,34 @@
+name: Build https.dll (Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, ci-* ]
+  pull_request:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, Win32, ARM64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (CMake)
+        run: >
+          cmake -B build -S . -A ${{ matrix.arch }}
+          -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}\install
+
+      - name: Build & Install
+        run: cmake --build build --config Release --target install
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: https-${{ matrix.arch }}
+          path: install\**\*
+          if-no-files-found: error
