@@ -1,0 +1,49 @@
+name: Build https.dll ARM64 (Windows)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install vcpkg + Lua (ARM64)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          git clone https://github.com/microsoft/vcpkg $env:USERPROFILE\vcpkg
+          & $env:USERPROFILE\vcpkg\bootstrap-vcpkg.bat
+
+          # ARM64 = no LuaJIT in vcpkg
+          & $env:USERPROFILE\vcpkg\vcpkg.exe install lua --triplet arm64-windows --clean-after-build
+
+          "VCPKG_ROOT=$($env:USERPROFILE)\vcpkg"      | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VCPKG_TRIPLET=arm64-windows"               | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configure (CMake)
+        shell: pwsh
+        run: >
+          cmake -B build -S .
+          -A ARM64
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET="$env:VCPKG_TRIPLET"
+          -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\install"
+
+      - name: Build & Install (Release)
+        run: cmake --build build --config Release --target install
+        shell: pwsh
+
+      - name: Upload dll
+        uses: actions/upload-artifact@v4
+        with:
+          name: https-ARM64-lua
+          path: install\**\*.dll
+          if-no-files-found: error
