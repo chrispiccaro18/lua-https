@@ -1,4 +1,4 @@
-name: Build https.dll (Windows, LuaJIT)
+name: Build https.dll (Windows, LuaJIT where supported)
 
 on:
   workflow_dispatch:
@@ -21,58 +21,45 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install vcpkg + (LuaJIT preferred)
+      - name: Install vcpkg + Lua/LuaJIT
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # Map MSVC -A values to vcpkg triplets
           if ("${{ matrix.arch }}" -eq "Win32") { $triplet = "x86-windows" }
           elseif ("${{ matrix.arch }}" -eq "ARM64") { $triplet = "arm64-windows" }
           else { $triplet = "x64-windows" }
 
-          # Bootstrap vcpkg
           git clone https://github.com/microsoft/vcpkg $env:USERPROFILE\vcpkg
           & $env:USERPROFILE\vcpkg\bootstrap-vcpkg.bat
 
-          # Try LuaJIT first; if it fails (common on some ARM64 setups), fall back to Lua.
-          $usingLuaFallback = $false
-          try {
+          # Lua flavor per-arch: use LuaJIT where supported, Lua on ARM64
+          if ($triplet -eq "arm64-windows") {
+            & $env:USERPROFILE\vcpkg\vcpkg.exe install lua --triplet $triplet --clean-after-build
+            $luaFlavor = "lua"
+          } else {
             & $env:USERPROFILE\vcpkg\vcpkg.exe install luajit --triplet $triplet --clean-after-build
-          }
-          catch {
-            if ("${{ matrix.arch }}" -eq "ARM64") {
-              Write-Host "LuaJIT unavailable for $triplet; falling back to Lua."
-              & $env:USERPROFILE\vcpkg\vcpkg.exe install lua --triplet $triplet --clean-after-build
-              $usingLuaFallback = $true
-            }
-            else {
-              throw
-            }
+            $luaFlavor = "luajit"
           }
 
-          # Export env for subsequent steps
           "VCPKG_ROOT=$($env:USERPROFILE)\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VCPKG_TRIPLET=$triplet" | Out-File -FilePath $env:GITHUB_ENV -Append
-          if ($usingLuaFallback) {
-            "BT_LUA_FLAVOR=lua" | Out-File -FilePath $env:GITHUB_ENV -Append
-          }
-          else {
-            "BT_LUA_FLAVOR=luajit" | Out-File -FilePath $env:GITHUB_ENV -Append
-          }
+          "BT_LUA_FLAVOR=$luaFlavor" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Configure (CMake)
+        shell: pwsh
         run: >
           cmake -B build -S .
           -A ${{ matrix.arch }}
-          -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake
-          -DVCPKG_TARGET_TRIPLET=%VCPKG_TRIPLET%
-          -DCMAKE_INSTALL_PREFIX=%CD%\install
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET="$env:VCPKG_TRIPLET"
+          -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\install"
 
       - name: Build & Install (Release)
         run: cmake --build build --config Release --target install
+        shell: pwsh
 
-      - name: Show install tree
+      - name: Show install tree (debug)
         shell: pwsh
         run: |
           Write-Host "`n=== Installed files ==="
